@@ -7,15 +7,33 @@ require('dotenv').config();
 
 const db = require('./db');
 const app = express();
-app.use(cors());
+
+// CORS - allow frontend
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
+// Rate limiting
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    message: { error: 'كثير من الطلبات، جرّب بعد شوي' }
+});
+app.use('/api/', limiter);
+
 const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || 'laith-secret-2026';
+const JWT_SECRET = process.env.JWT_SECRET;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
 if (!OPENAI_KEY) {
     console.error('❌ OPENAI_API_KEY not set!');
+    process.exit(1);
+}
+if (!JWT_SECRET) {
+    console.error('❌ JWT_SECRET not set!');
     process.exit(1);
 }
 
@@ -43,49 +61,78 @@ function checkUsage(req, res, next) {
 
 // OpenAI call
 async function callOpenAI(systemPrompt, userPrompt) {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${OPENAI_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt }
-            ],
-            temperature: 0.7,
-            max_tokens: 2000
-        })
-    });
-    if (!res.ok) throw new Error('OpenAI error');
-    const data = await res.json();
-    return data.choices[0].message.content;
+    try {
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: { 
+                'Authorization': `Bearer ${OPENAI_KEY}`, 
+                'Content-Type': 'application/json' 
+            },
+            body: JSON.stringify({
+                model: 'gpt-4o-mini',
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userPrompt }
+                ],
+                temperature: 0.7,
+                max_tokens: 2000
+            })
+        });
+
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            console.error('OpenAI error:', res.status, errData);
+            throw new Error(`OpenAI error ${res.status}: ${errData.error?.message || 'Unknown'}`);
+        }
+
+        const data = await res.json();
+        return data.choices[0].message.content;
+    } catch (err) {
+        console.error('OpenAI call failed:', err.message);
+        throw err;
+    }
 }
 
 // Auth
 app.post('/api/auth/register', async (req, res) => {
-    const { email, password, name } = req.body;
-    if (!email || !password || !name) return res.status(400).json({ error: 'جميع الحقول مطلوبة' });
-    const user = db.createUser(email, password, name);
-    if (!user) return res.status(400).json({ error: 'الإيميل مستخدم مسبقاً' });
-    const token = jwt.sign({ id: user.id, email: user.email, plan: user.plan }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user });
+    try {
+        const { email, password, name } = req.body;
+        if (!email || !password || !name) return res.status(400).json({ error: 'جميع الحقول مطلوبة' });
+        const user = db.createUser(email, password, name);
+        if (!user) return res.status(400).json({ error: 'الإيميل مستخدم مسبقاً' });
+        const token = jwt.sign({ id: user.id, email: user.email, plan: user.plan }, JWT_SECRET, { expiresIn: '7d' });
+        res.json({ token, user });
+    } catch (err) {
+        console.error('Register error:', err);
+        res.status(500).json({ error: 'صار خطأ بالسيرفر' });
+    }
 });
 
 app.post('/api/auth/login', async (req, res) => {
-    const { email, password } = req.body;
-    const user = db.findUser(email);
-    if (!user || !bcrypt.compareSync(password, user.password)) {
-        return res.status(401).json({ error: 'إيميل أو كلمة مرور غلط' });
+    try {
+        const { email, password } = req.body;
+        const user = db.findUser(email);
+        if (!user || !bcrypt.compareSync(password, user.password)) {
+            return res.status(401).json({ error: 'إيميل أو كلمة مرور غلط' });
+        }
+        const token = jwt.sign({ id: user.id, email: user.email, plan: user.plan }, JWT_SECRET, { expiresIn: '7d' });
+        res.json({ token, user: { id: user.id, email: user.email, name: user.name, plan: user.plan } });
+    } catch (err) {
+        console.error('Login error:', err);
+        res.status(500).json({ error: 'صار خطأ بالسيرفر' });
     }
-    const token = jwt.sign({ id: user.id, email: user.email, plan: user.plan }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { id: user.id, email: user.email, name: user.name, plan: user.plan } });
 });
 
 app.get('/api/auth/me', auth, (req, res) => {
-    const user = db.findUserById(req.user.id);
-    if (!user) return res.status(404).json({ error: 'غير موجود' });
-    const sub = db.getUserSubscription(req.user.id);
-    res.json({ user: { id: user.id, email: user.email, name: user.name, plan: user.plan }, subscription: sub });
+    try {
+        const user = db.findUserById(req.user.id);
+        if (!user) return res.status(404).json({ error: 'غير موجود' });
+        const sub = db.getUserSubscription(req.user.id);
+        res.json({ user: { id: user.id, email: user.email, name: user.name, plan: user.plan }, subscription: sub });
+    } catch (err) {
+        console.error('Auth me error:', err);
+        res.status(500).json({ error: 'صار خطأ' });
+    }
 });
 
 // AI APIs
@@ -99,7 +146,10 @@ app.post('/api/summarize', auth, checkUsage, async (req, res) => {
         const result = await callOpenAI(sp, text);
         db.incrementUsage(req.user.id);
         res.json({ result, usage: db.getUsage(req.user.id) });
-    } catch (err) { res.status(500).json({ error: 'صار خطأ' }); }
+    } catch (err) {
+        console.error('Summarize error:', err.message);
+        res.status(500).json({ error: 'صار خطأ بالذكاء الاصطناعي: ' + err.message });
+    }
 });
 
 app.post('/api/captions', auth, checkUsage, async (req, res) => {
@@ -110,10 +160,13 @@ app.post('/api/captions', auth, checkUsage, async (req, res) => {
         const am = { general: 'عام', youth: 'شباب', business: 'أعمال', moms: 'أمهات' };
         const sp = `أكتب 10 كابشنات إنستغرام بالعربية لبوست عن: "${topic}". النمط: ${tm[tone]}. الجمهور: ${am[audience]}. كل كابشن قصير (2-3 سطور)، فيه إيموجي وهاشتاغات. افصل بين الكابشنات بسطر فارغ.`;
         const result = await callOpenAI(sp, topic);
-        const captions = result.split(/\n\n/).filter(c => c.trim());
+        const captions = result.split(/\n\s*\n/).filter(c => c.trim());
         db.incrementUsage(req.user.id);
         res.json({ result: captions, usage: db.getUsage(req.user.id) });
-    } catch (err) { res.status(500).json({ error: 'صار خطأ' }); }
+    } catch (err) {
+        console.error('Captions error:', err.message);
+        res.status(500).json({ error: 'صار خطأ بالذكاء الاصطناعي: ' + err.message });
+    }
 });
 
 app.post('/api/translate', auth, checkUsage, async (req, res) => {
@@ -126,7 +179,10 @@ app.post('/api/translate', auth, checkUsage, async (req, res) => {
         const result = await callOpenAI(sp, text);
         db.incrementUsage(req.user.id);
         res.json({ result, usage: db.getUsage(req.user.id) });
-    } catch (err) { res.status(500).json({ error: 'صار خطأ' }); }
+    } catch (err) {
+        console.error('Translate error:', err.message);
+        res.status(500).json({ error: 'صار خطأ بالذكاء الاصطناعي: ' + err.message });
+    }
 });
 
 // Payments
@@ -139,24 +195,37 @@ app.post('/api/payment/shamcash', auth, async (req, res) => {
         const payment = db.createPayment(req.user.id, amount, 'shamcash', reference);
         db.createSubscription(req.user.id, plan, amount, 'shamcash', 'pending');
         res.json({ success: true, paymentId: payment.id, message: 'تم إرسال طلب الدفع. سيتم التفعيل خلال 24 ساعة.' });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) {
+        console.error('ShamCash error:', err);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.post('/api/payment/confirm/:id', async (req, res) => {
-    const payment = db.confirmPayment(req.params.id);
-    if (!payment) return res.status(404).json({ error: 'غير موجود' });
-    const dbData = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'data.json')));
-    const sub = dbData.subscriptions.find(s => s.userId === payment.userId && s.status === 'pending');
-    if (sub) db.activateSubscription(sub.id);
-    res.json({ success: true, message: 'تم تأكيد الدفع والتفعيل' });
+    try {
+        const payment = db.confirmPayment(req.params.id);
+        if (!payment) return res.status(404).json({ error: 'غير موجود' });
+        const dbData = db.readDB();
+        const sub = dbData.subscriptions.find(s => s.userId === payment.userId && s.status === 'pending');
+        if (sub) db.activateSubscription(sub.id);
+        res.json({ success: true, message: 'تم تأكيد الدفع والتفعيل' });
+    } catch (err) {
+        console.error('Confirm error:', err);
+        res.status(500).json({ error: 'صار خطأ' });
+    }
 });
 
 app.get('/api/usage', auth, (req, res) => {
-    const user = db.findUserById(req.user.id);
-    const plan = user?.plan || 'free';
-    const used = db.getUsage(req.user.id);
-    const limit = db.getUsageLimit(plan);
-    res.json({ used, limit, plan, remaining: Math.max(0, limit - used) });
+    try {
+        const user = db.findUserById(req.user.id);
+        const plan = user?.plan || 'free';
+        const used = db.getUsage(req.user.id);
+        const limit = db.getUsageLimit(plan);
+        res.json({ used, limit, plan, remaining: Math.max(0, limit - used) });
+    } catch (err) {
+        console.error('Usage error:', err);
+        res.status(500).json({ error: 'صار خطأ' });
+    }
 });
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));

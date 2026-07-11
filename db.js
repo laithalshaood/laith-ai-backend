@@ -96,7 +96,6 @@ function activateSubscription(subId) {
     if (sub) {
         sub.status = 'active';
         sub.activatedAt = new Date().toISOString();
-        writeDB(db);
         const user = db.users.find(u => u.id === sub.userId);
         if (user) user.plan = sub.plan;
         writeDB(db);
@@ -163,5 +162,6 @@ module.exports = {
     createUser, findUser, findUserById, updateUserPlan,
     createSubscription, getUserSubscription, activateSubscription,
     getUsage, incrementUsage, getUsageLimit,
-    createPayment, getPayment, confirmPayment
+    createPayment, getPayment, confirmPayment,
+    readDB, writeDB
 };
