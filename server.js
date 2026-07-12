@@ -58,7 +58,22 @@ function checkUsage(req, res, next) {
     }
     next();
 }
-
+function createPayment(userId, amount, method, reference) {
+    const db = require('./db');
+    const payment = {
+        id: uuidv4(),
+        userId,
+        amount,
+        method,
+        reference,
+        status: 'pending',
+        createdAt: new Date().toISOString()
+    };
+    db.payments.push(payment);
+    writeDB(db);
+    console.log('💰 ShamCash payment created:', { id: payment.id, userId: payment.userId, plan: payment.amount === 7 ? 'pro' : 'business' });
+    return payment;
+}
 // OpenAI call
 async function callOpenAI(systemPrompt, userPrompt) {
     try {
