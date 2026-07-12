@@ -46,7 +46,18 @@ function auth(req, res, next) {
         next();
     } catch { return res.status(401).json({ error: 'جلسة منتهية' }); }
 }
-
+function activateSubscription(subId) {
+    const db = readDB();
+    const sub = db.subscriptions.find(s => s.id === subId);
+    if (sub) {
+        sub.status = 'active';
+        sub.activatedAt = new Date().toISOString();
+        const user = db.users.find(u => u.id === sub.userId);
+        if (user) user.plan = sub.plan;
+        writeDB(db); // ← مرة واحدة بس
+    }
+    return sub;
+}
 function checkUsage(req, res, next) {
     const userId = req.user?.id;
     const user = db.findUserById(userId);
