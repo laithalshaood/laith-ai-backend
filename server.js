@@ -26,10 +26,10 @@ app.use('/api/', limiter);
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET;
-const OPENAI_KEY = process.env.OPENAI_API_KEY;
+const MISTRAL_KEY = process.env.MISTRAL_API_KEY;
 
-if (!OPENAI_KEY) {
-    console.error('❌ OPENAI_API_KEY not set!');
+if (!MISTRAL_KEY) {
+    console.error('❌ MISTRAL_API_KEY not set!');
     process.exit(1);
 }
 if (!JWT_SECRET) {
@@ -62,14 +62,14 @@ function checkUsage(req, res, next) {
 // OpenAI call
 async function callOpenAI(systemPrompt, userPrompt) {
     try {
-        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        const res = await fetch('https://api.mistral.ai/v1/chat/completions', {
             method: 'POST',
             headers: { 
-                'Authorization': `Bearer ${OPENAI_KEY}`, 
+                'Authorization': `Bearer ${MISTRAL_KEY}`, 
                 'Content-Type': 'application/json' 
             },
             body: JSON.stringify({
-                model: 'gpt-4o-mini',
+                model: 'mistral-tiny',  // أو 'mistral-small' للأفضل
                 messages: [
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: userPrompt }
@@ -78,21 +78,20 @@ async function callOpenAI(systemPrompt, userPrompt) {
                 max_tokens: 2000
             })
         });
-
+        
         if (!res.ok) {
             const errData = await res.json().catch(() => ({}));
-            console.error('OpenAI error:', res.status, errData);
-            throw new Error(`OpenAI error ${res.status}: ${errData.error?.message || 'Unknown'}`);
+            console.error('Mistral error:', res.status, errData);
+            throw new Error(`Mistral error ${res.status}: ${errData.error?.message || 'Unknown'}`);
         }
-
+        
         const data = await res.json();
         return data.choices[0].message.content;
     } catch (err) {
-        console.error('OpenAI call failed:', err.message);
+        console.error('AI call failed:', err.message);
         throw err;
     }
 }
-
 // Auth
 app.post('/api/auth/register', async (req, res) => {
     try {
