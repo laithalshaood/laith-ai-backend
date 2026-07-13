@@ -200,20 +200,9 @@ app.post('/api/payment/confirm/:id', async (req, res) => {
     try {
         const payment = db.confirmPayment(req.params.id);
         if (!payment) return res.status(404).json({ error: 'غير موجود' });
-        
-        // Activate the subscription
         const dbData = db.readDB();
         const sub = dbData.subscriptions.find(s => s.userId === payment.userId && s.status === 'pending');
-        if (sub) {
-            db.activateSubscription(sub.id);
-            // Update user plan directly
-            const user = dbData.users.find(u => u.id === payment.userId);
-            if (user) {
-                user.plan = sub.plan;
-                db.writeDB(dbData);
-            }
-        }
-        
+        if (sub) db.activateSubscription(sub.id);
         res.json({ success: true, message: 'تم تأكيد الدفع والتفعيل' });
     } catch (err) {
         console.error('Confirm error:', err);
