@@ -1,156 +1,172 @@
-const mongoose = require('mongoose');
+const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 
-// ==================== CONNECT ====================
-async function connectDB() {
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
+
+// ==================== INIT DB ====================
+async function initDB() {
+  const client = await pool.connect();
   try {
-    await mongoose.connect(process.env.MONGODB_URI);
-    console.log('✅ MongoDB Connected');
-  } catch (err) {
-    console.error('❌ MongoDB Error:', err.message);
-    process.exit(1);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        name TEXT NOT NULL,
+        plan TEXT DEFAULT 'free',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        sham_cash_phone TEXT
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS subscriptions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id),
+        plan TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        method TEXT NOT NULL,
+        status TEXT DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP,
+        activated_at TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS payments (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id),
+        amount INTEGER NOT NULL,
+        method TEXT NOT NULL,
+        reference TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        confirmed_at TIMESTAMP
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS usage_log (
+        id SERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        usage_date DATE NOT NULL,
+        count INTEGER DEFAULT 0,
+        UNIQUE(user_id, usage_date)
+      )
+    `);
+
+    console.log('✅ PostgreSQL tables created');
+  } finally {
+    client.release();
   }
 }
 
-// ==================== SCHEMAS ====================
-const userSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  name: { type: String, required: true },
-  plan: { type: String, default: 'free' },
-  createdAt: { type: String, default: () => new Date().toISOString() },
-  shamCashPhone: { type: String, default: null }
-});
-
-const subscriptionSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  userId: { type: String, required: true },
-  plan: { type: String, required: true },
-  amount: { type: Number, required: true },
-  method: { type: String, required: true },
-  status: { type: String, default: 'pending' },
-  createdAt: { type: String, default: () => new Date().toISOString() },
-  expiresAt: { type: String },
-  activatedAt: { type: String }
-});
-
-const paymentSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  userId: { type: String, required: true },
-  amount: { type: Number, required: true },
-  method: { type: String, required: true },
-  reference: { type: String },
-  status: { type: String, default: 'pending' },
-  createdAt: { type: String, default: () => new Date().toISOString() },
-  confirmedAt: { type: String }
-});
-
-const usageSchema = new mongoose.Schema({
-  key: { type: String, required: true, unique: true },
-  count: { type: Number, default: 0 }
-});
-
-// ==================== MODELS ====================
-const User = mongoose.model('User', userSchema);
-const Subscription = mongoose.model('Subscription', subscriptionSchema);
-const Payment = mongoose.model('Payment', paymentSchema);
-const Usage = mongoose.model('Usage', usageSchema);
-
 // ==================== USERS ====================
 async function createUser(email, password, name) {
-  const existing = await User.findOne({ email });
-  if (existing) return null;
+  try {
+    const existing = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (existing.rows.length > 0) return null;
 
-  const user = new User({
-    id: uuidv4(),
-    email,
-    password: bcrypt.hashSync(password, 10),
-    name,
-    plan: 'free',
-    createdAt: new Date().toISOString(),
-    shamCashPhone: null
-  });
-  await user.save();
-  console.log('✅ User created:', user.id);
-  return { id: user.id, email: user.email, name: user.name, plan: user.plan };
+    const id = uuidv4();
+    const hashedPassword = bcrypt.hashSync(password, 10);
+
+    await pool.query(
+      'INSERT INTO users (id, email, password, name, plan) VALUES ($1, $2, $3, $4, $5)',
+      [id, email, hashedPassword, name, 'free']
+    );
+
+    console.log('✅ User created:', id);
+    return { id, email, name, plan: 'free' };
+  } catch (err) {
+    console.error('Create user error:', err);
+    return null;
+  }
 }
 
 async function findUser(email) {
-  return await User.findOne({ email }).lean();
+  const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+  return result.rows[0] || null;
 }
 
 async function findUserById(id) {
-  return await User.findOne({ id }).lean();
+  const result = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+  return result.rows[0] || null;
 }
 
 async function updateUserPlan(userId, plan) {
-  await User.updateOne({ id: userId }, { plan });
+  await pool.query('UPDATE users SET plan = $1 WHERE id = $2', [plan, userId]);
   console.log('✅ User plan updated:', userId, '->', plan);
 }
 
 // ==================== SUBSCRIPTIONS ====================
 async function createSubscription(userId, plan, amount, method, status) {
   status = status || 'pending';
-  const sub = new Subscription({
-    id: uuidv4(),
-    userId,
-    plan,
-    amount,
-    method,
-    status,
-    createdAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-  });
-  await sub.save();
-  console.log('✅ Subscription created:', sub.id);
-  return sub.toObject();
+  const id = uuidv4();
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+  await pool.query(
+    'INSERT INTO subscriptions (id, user_id, plan, amount, method, status, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+    [id, userId, plan, amount, method, status, expiresAt]
+  );
+
+  console.log('✅ Subscription created:', id);
+  return { id, userId, plan, amount, method, status, expiresAt };
 }
 
 async function getUserSubscription(userId) {
-  const subs = await Subscription.find({ userId, status: 'active' }).sort({ createdAt: -1 }).lean();
-  return subs[0] || null;
+  const result = await pool.query(
+    'SELECT * FROM subscriptions WHERE user_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 1',
+    [userId, 'active']
+  );
+  return result.rows[0] || null;
 }
 
 async function activateSubscription(subId) {
-  const sub = await Subscription.findOne({ id: subId });
-  if (sub) {
-    sub.status = 'active';
-    sub.activatedAt = new Date().toISOString();
-    await sub.save();
+  const result = await pool.query(
+    'UPDATE subscriptions SET status = $1, activated_at = $2 WHERE id = $3 RETURNING *',
+    ['active', new Date(), subId]
+  );
 
-    const user = await User.findOne({ id: sub.userId });
-    if (user) {
-      user.plan = sub.plan;
-      await user.save();
-      console.log('✅ User plan changed:', user.id, '->', sub.plan);
-    }
+  if (result.rows.length > 0) {
+    const sub = result.rows[0];
+    await pool.query('UPDATE users SET plan = $1 WHERE id = $2', [sub.plan, sub.user_id]);
     console.log('✅ Subscription activated:', subId);
-  } else {
-    console.log('❌ Subscription not found:', subId);
+    return sub;
   }
-  return sub;
+  return null;
 }
 
 // ==================== USAGE ====================
 async function getUsage(userId) {
   const today = new Date().toISOString().split('T')[0];
-  const key = userId + '_' + today;
-  const usage = await Usage.findOne({ key }).lean();
-  return usage ? usage.count : 0;
+  const result = await pool.query(
+    'SELECT count FROM usage_log WHERE user_id = $1 AND usage_date = $2',
+    [userId, today]
+  );
+  return result.rows[0]?.count || 0;
 }
 
 async function incrementUsage(userId) {
   const today = new Date().toISOString().split('T')[0];
-  const key = userId + '_' + today;
-  await Usage.findOneAndUpdate(
-    { key },
-    { $inc: { count: 1 } },
-    { upsert: true, new: true }
+
+  await pool.query(`
+    INSERT INTO usage_log (user_id, usage_date, count) 
+    VALUES ($1, $2, 1)
+    ON CONFLICT (user_id, usage_date) 
+    DO UPDATE SET count = usage_log.count + 1
+  `, [userId, today]);
+
+  const result = await pool.query(
+    'SELECT count FROM usage_log WHERE user_id = $1 AND usage_date = $2',
+    [userId, today]
   );
-  const usage = await Usage.findOne({ key }).lean();
-  return usage.count;
+
+  return result.rows[0].count;
 }
 
 function getUsageLimit(plan) {
@@ -160,59 +176,55 @@ function getUsageLimit(plan) {
 
 // ==================== PAYMENTS ====================
 async function createPayment(userId, amount, method, reference) {
-  const payment = new Payment({
-    id: uuidv4(),
-    userId,
-    amount,
-    method,
-    reference,
-    status: 'pending',
-    createdAt: new Date().toISOString()
-  });
-  await payment.save();
-  console.log('✅ Payment created:', payment.id);
-  return payment.toObject();
+  const id = uuidv4();
+
+  await pool.query(
+    'INSERT INTO payments (id, user_id, amount, method, reference) VALUES ($1, $2, $3, $4, $5)',
+    [id, userId, amount, method, reference]
+  );
+
+  console.log('✅ Payment created:', id);
+  return { id, userId, amount, method, reference, status: 'pending' };
 }
 
 async function getPayment(id) {
-  return await Payment.findOne({ id }).lean();
+  const result = await pool.query('SELECT * FROM payments WHERE id = $1', [id]);
+  return result.rows[0] || null;
 }
 
 async function confirmPayment(id) {
-  const payment = await Payment.findOne({ id });
-  if (payment) {
-    payment.status = 'confirmed';
-    payment.confirmedAt = new Date().toISOString();
-    await payment.save();
+  const result = await pool.query(
+    'UPDATE payments SET status = $1, confirmed_at = $2 WHERE id = $3 RETURNING *',
+    ['confirmed', new Date(), id]
+  );
+
+  if (result.rows.length > 0) {
     console.log('✅ Payment confirmed:', id);
-  } else {
-    console.log('❌ Payment not found:', id);
+    return result.rows[0];
   }
-  return payment;
+  return null;
 }
 
 // ==================== ADMIN ====================
 async function getPendingPayments() {
-  return await Payment.find({ status: 'pending' }).lean();
+  const result = await pool.query('SELECT * FROM payments WHERE status = $1 ORDER BY created_at DESC', ['pending']);
+  return result.rows;
 }
 
 // ==================== BACKWARD COMPAT ====================
 async function readDB() {
-  const users = await User.find().lean();
-  const subscriptions = await Subscription.find().lean();
-  const payments = await Payment.find().lean();
-  const usage = {};
-  const usages = await Usage.find().lean();
-  usages.forEach(u => { usage[u.key] = u.count; });
-  return { users, subscriptions, payments, usage };
+  const users = await pool.query('SELECT * FROM users').then(r => r.rows);
+  const subscriptions = await pool.query('SELECT * FROM subscriptions').then(r => r.rows);
+  const payments = await pool.query('SELECT * FROM payments').then(r => r.rows);
+  return { users, subscriptions, payments, usage: {} };
 }
 
 async function writeDB(data) {
-  // MongoDB writes directly, no need for this
+  // No-op for PostgreSQL
 }
 
 module.exports = {
-  connectDB,
+  pool, initDB,
   createUser, findUser, findUserById, updateUserPlan,
   createSubscription, getUserSubscription, activateSubscription,
   getUsage, incrementUsage, getUsageLimit,
