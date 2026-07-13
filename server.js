@@ -27,7 +27,7 @@ app.use('/api/', limiter);
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const MISTRAL_KEY = process.env.MISTRAL_API_KEY;
-const MONGODB_URI = process.env.MONGODB_URI;
+const DATABASE_URL = process.env.DATABASE_URL;
 
 if (!MISTRAL_KEY) {
     console.error('❌ MISTRAL_API_KEY not set!');
@@ -37,8 +37,8 @@ if (!JWT_SECRET) {
     console.error('❌ JWT_SECRET not set!');
     process.exit(1);
 }
-if (!MONGODB_URI) {
-    console.error('❌ MONGODB_URI not set!');
+if (!DATABASE_URL) {
+    console.error('❌ DATABASE_URL not set!');
     process.exit(1);
 }
 
@@ -75,7 +75,7 @@ function checkUsage(req, res, next) {
 
             // Check if subscription expired
             const sub = await db.getUserSubscription(userId);
-            if (sub && new Date(sub.expiresAt) < new Date() && plan !== 'free') {
+            if (sub && new Date(sub.expires_at) < new Date() && plan !== 'free') {
                 await db.updateUserPlan(userId, 'free');
                 return res.status(403).json({ error: 'الاشتراك منتهي، جدد اشتراكك' });
             }
@@ -227,8 +227,7 @@ app.post('/api/payment/shamcash', auth, async (req, res) => {
         if (!amount) return res.status(400).json({ error: 'خطة غير صحيحة' });
 
         // Cancel any existing pending subscriptions for this user
-        const { Subscription } = require('./db');
-        await Subscription.deleteMany({ userId: req.user.id, status: 'pending' });
+        await db.pool.query('DELETE FROM subscriptions WHERE user_id = $1 AND status = $2', [req.user.id, 'pending']);
 
         const payment = await db.createPayment(req.user.id, amount, 'shamcash', reference);
         const sub = await db.createSubscription(req.user.id, plan, amount, 'shamcash', 'pending');
@@ -245,24 +244,25 @@ app.post('/api/payment/confirm/:id', auth, adminOnly, async (req, res) => {
         const payment = await db.confirmPayment(req.params.id);
         if (!payment) return res.status(404).json({ error: 'الدفعة غير موجودة' });
 
-        const sub = await db.getUserSubscription(payment.userId);
         // Find pending subscription for this user
-        const { Subscription } = require('./db');
-        const pendingSub = await Subscription.findOne({ userId: payment.userId, status: 'pending' }).lean();
+        const subResult = await db.pool.query(
+            'SELECT * FROM subscriptions WHERE user_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 1',
+            [payment.user_id, 'pending']
+        );
 
-        if (!pendingSub) {
+        if (subResult.rows.length === 0) {
             return res.status(404).json({ error: 'لا يوجد اشتراك معلق لهاد المستخدم' });
         }
 
-        const activated = await db.activateSubscription(pendingSub.id);
-        console.log('✅ Subscription activated:', { subId: pendingSub.id, userId: payment.userId, plan: pendingSub.plan });
+        const activated = await db.activateSubscription(subResult.rows[0].id);
+        console.log('✅ Subscription activated:', { subId: subResult.rows[0].id, userId: payment.user_id, plan: activated.plan });
 
         res.json({ 
             success: true, 
             message: 'تم تأكيد الدفع والتفعيل بنجاح',
-            userId: payment.userId,
-            plan: pendingSub.plan,
-            expiresAt: activated.expiresAt
+            userId: payment.user_id,
+            plan: activated.plan,
+            expiresAt: activated.expires_at
         });
     } catch (err) {
         console.error('Confirm error:', err);
@@ -279,11 +279,11 @@ app.get('/api/admin/pending-payments', auth, adminOnly, async (req, res) => {
             count: pending.length,
             payments: pending.map(p => ({
                 id: p.id,
-                userId: p.userId,
+                userId: p.user_id,
                 amount: p.amount,
                 method: p.method,
                 reference: p.reference,
-                createdAt: p.createdAt
+                createdAt: p.created_at
             }))
         });
     } catch (err) {
@@ -331,9 +331,12 @@ app.use((req, res) => {
     res.status(404).json({ error: 'المسار غير موجود' });
 });
 
-// Start server after DB connects
-db.connectDB().then(() => {
+// Start server after DB init
+db.initDB().then(() => {
     app.listen(PORT, () => {
         console.log(`🚀 لخّصلي Backend شغال على المنفذ ${PORT}`);
     });
+}).catch(err => {
+    console.error('❌ Failed to start:', err);
+    process.exit(1);
 });
