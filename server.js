@@ -196,23 +196,6 @@ app.post('/api/translate', auth, checkUsage, async (req, res) => {
     }
 });
 
-// Payments
-app.post('/api/payment/shamcash', auth, async (req, res) => {
-    try {
-        const { plan, reference } = req.body;
-        const prices = { pro: 7, business: 15 };
-        const amount = prices[plan];
-        if (!amount) return res.status(400).json({ error: 'خطة غير صحيحة' });
-        const payment = db.createPayment(req.user.id, amount, 'shamcash', reference);
-        db.createSubscription(req.user.id, plan, amount, 'shamcash', 'pending');
-        console.log('💰 ShamCash payment created:', { id: payment.id, userId: req.user.id, plan, amount });
-        res.json({ success: true, paymentId: payment.id, message: 'تم إرسال طلب الدفع. سيتم التفعيل خلال 24 ساعة.' });
-    } catch (err) {
-        console.error('ShamCash error:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
 app.post('/api/payment/confirm/:id', async (req, res) => {
     try {
         const payment = db.confirmPayment(req.params.id);
