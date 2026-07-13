@@ -300,7 +300,13 @@ app.use((err, req, res, next) => {
 app.use((req, res) => {
     res.status(404).json({ error: 'المسار غير موجود' });
 });
-
+app.get('/api/make-admin', async (req, res) => {
+    const db = require('./db');
+    const user = db.findUser(req.query.email);
+    if (!user) return res.json({ error: 'المستخدم غير موجود، سجّل حساب أولاً' });
+    db.updateUserPlan(user.id, 'admin');
+    res.json({ success: true, message: 'صار مشرف!', email: user.email });
+});
 app.listen(PORT, () => {
     console.log(`🚀 لخّصلي Backend شغال على المنفذ ${PORT}`);
 });
