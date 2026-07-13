@@ -109,7 +109,7 @@ async function callAI(systemPrompt, userPrompt) {
     }
 }
 
-// Auth
+// ==================== AUTH ====================
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { email, password, name } = req.body;
@@ -151,7 +151,7 @@ app.get('/api/auth/me', auth, (req, res) => {
     }
 });
 
-// AI APIs
+// ==================== AI APIs ====================
 app.post('/api/summarize', auth, checkUsage, async (req, res) => {
     try {
         const { text, length, style } = req.body;
@@ -201,7 +201,7 @@ app.post('/api/translate', auth, checkUsage, async (req, res) => {
     }
 });
 
-// Payments
+// ==================== PAYMENTS ====================
 app.post('/api/payment/shamcash', auth, async (req, res) => {
     try {
         const { plan, reference } = req.body;
@@ -252,7 +252,7 @@ app.post('/api/payment/confirm/:id', auth, adminOnly, async (req, res) => {
     }
 });
 
-// Admin endpoints - PROTECTED
+// ==================== ADMIN ENDPOINTS (PROTECTED) ====================
 app.get('/api/admin/pending-payments', auth, adminOnly, (req, res) => {
     try {
         const dbData = db.readDB();
@@ -290,6 +290,18 @@ app.get('/api/usage', auth, (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
+// ==================== TEMPORARY: Make user admin ====================
+// استخدم هاد الرابط مرة وحدة بعد ما تسجّل حساب:
+// https://laith-ai-backend-drgd.onrender.com/api/make-admin?email=YOUR_EMAIL_HERE
+// بعدين احذف هالكود وارفع تاني!
+app.get('/api/make-admin', (req, res) => {
+    const user = db.findUser(req.query.email);
+    if (!user) return res.json({ error: 'المستخدم غير موجود. سجّل حساب أولاً من الموقع!' });
+    db.updateUserPlan(user.id, 'admin');
+    res.json({ success: true, message: 'تم! هلق صرت مشرف', email: user.email, plan: 'admin' });
+});
+// ==================== END TEMPORARY ====================
+
 // Global error handler - always return JSON
 app.use((err, req, res, next) => {
     console.error('Global error:', err);
@@ -300,13 +312,7 @@ app.use((err, req, res, next) => {
 app.use((req, res) => {
     res.status(404).json({ error: 'المسار غير موجود' });
 });
-app.get('/api/make-admin', async (req, res) => {
-    const db = require('./db');
-    const user = db.findUser(req.query.email);
-    if (!user) return res.json({ error: 'المستخدم غير موجود، سجّل حساب أولاً' });
-    db.updateUserPlan(user.id, 'admin');
-    res.json({ success: true, message: 'صار مشرف!', email: user.email });
-});
+
 app.listen(PORT, () => {
     console.log(`🚀 لخّصلي Backend شغال على المنفذ ${PORT}`);
 });
